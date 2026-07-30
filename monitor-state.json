@@ -1,0 +1,8 @@
+{
+  "above_threshold": false,
+  "consecutive_failures": 0,
+  "failure_alert_sent": false,
+  "initialized": true,
+  "last_heartbeat_at": "2026-07-30T08:46:48.826795Z",
+  "schema_version": 1
+}
