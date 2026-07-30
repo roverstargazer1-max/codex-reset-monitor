@@ -1,0 +1,47 @@
+name: Codex Reset Monitor
+
+on:
+  schedule:
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Choose an action"
+        required: true
+        default: "send-test-email"
+        type: choice
+        options:
+          - send-test-email
+          - check-now
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-reset-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Send test email
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'send-test-email'
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python3 monitor.py --send-test
+
+      - name: Check forecast
+        if: github.event_name == 'schedule' || inputs.mode == 'check-now'
+        env:
+          ALERT_THRESHOLD: "80"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          STATE_BRANCH: monitor-state
+        run: python3 monitor.py
