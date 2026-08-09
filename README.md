@@ -1,4 +1,5 @@
 # Codex Reset Monitor
+[????](README-zh.md)
 
 A small personal monitor for the public forecast at <https://codex-reset.com/>.
 
@@ -8,10 +9,16 @@ to strictly above `80%`, the workflow sends one Chinese email through Gmail.
 It will not send another probability email until the value has returned to
 `80%` or below and crosses the threshold again.
 
+The monitor also stores `last_reset_at` as a baseline. When a later response
+contains a newer value, it sends one reset email. This is the reliable
+representation of the displayed "time since reset" dropping back.
+
 ## Behaviour
 
 - Runs at minute 7, 27, and 47 of every hour.
 - Sends one alert on the first observed value above 80%.
+- Records the initial `last_reset_at` without alerting, then sends one reset email
+  when that value becomes newer.
 - Stores only non-sensitive state on the `monitor-state` branch.
 - Sends a fault email after three consecutive forecast failures.
 - Sends a recovery email when the forecast becomes available again.
@@ -46,6 +53,7 @@ default branch and writes `monitor-state.json`. The file contains only:
 
 - whether the monitor has been initialized;
 - whether the probability is currently above the threshold;
+- the most recent observed global reset time;
 - the consecutive forecast failure count;
 - whether a failure email was sent;
 - the last heartbeat timestamp.
