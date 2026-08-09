@@ -9,6 +9,8 @@ from monitor import Forecast, Monitor, MonitorState
 NOW = datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc)
 FORECAST_LOW = Forecast(80, "2026-07-30T07:00:00Z", "2026-07-29T04:09:02Z")
 FORECAST_HIGH = Forecast(81, "2026-07-30T07:00:00Z", "2026-07-29T04:09:02Z")
+FORECAST_AFTER_RESET = Forecast(80, "2026-07-30T08:00:00Z", "2026-07-30T07:55:00Z")
+FORECAST_OLDER_RESET = Forecast(80, "2026-07-30T08:00:00Z", "2026-07-28T04:09:02Z")
 
 
 class FakeStore:
@@ -27,11 +29,15 @@ class FakeStore:
 class FakeNotifier:
     def __init__(self) -> None:
         self.probability_alerts: list[int] = []
+        self.reset_alerts: list[str] = []
         self.failure_alerts: list[int] = []
         self.recovery_alerts: list[int] = []
 
     def send_probability_alert(self, forecast: Forecast, threshold: int, checked_at: datetime) -> None:
         self.probability_alerts.append(forecast.probability_24h)
+
+    def send_reset_alert(self, forecast: Forecast, checked_at: datetime) -> None:
+        self.reset_alerts.append(forecast.last_reset_at)
 
     def send_failure_alert(self, error: Exception, failures: int, checked_at: datetime) -> None:
         self.failure_alerts.append(failures)
@@ -54,7 +60,29 @@ class MonitorTests(unittest.TestCase):
         result = self.make_monitor(store, notifier, FORECAST_LOW).run_once()
         self.assertEqual(result, 0)
         self.assertEqual(notifier.probability_alerts, [])
+        self.assertEqual(store.state.last_observed_reset_at, FORECAST_LOW.last_reset_at)
         self.assertFalse(store.state.above_threshold)
+
+    def test_newer_last_reset_time_sends_one_reset_alert(self) -> None:
+        state = MonitorState(initialized=True, last_observed_reset_at=FORECAST_LOW.last_reset_at)
+        store, notifier = FakeStore(state), FakeNotifier()
+        self.make_monitor(store, notifier, FORECAST_AFTER_RESET).run_once()
+        self.assertEqual(notifier.reset_alerts, [FORECAST_AFTER_RESET.last_reset_at])
+        self.assertEqual(store.state.last_observed_reset_at, FORECAST_AFTER_RESET.last_reset_at)
+
+    def test_unchanged_last_reset_time_does_not_repeat_reset_alert(self) -> None:
+        state = MonitorState(initialized=True, last_observed_reset_at=FORECAST_LOW.last_reset_at)
+        store, notifier = FakeStore(state), FakeNotifier()
+        self.make_monitor(store, notifier, FORECAST_LOW).run_once()
+        self.assertEqual(notifier.reset_alerts, [])
+
+    def test_older_last_reset_time_is_not_treated_as_a_reset(self) -> None:
+        state = MonitorState(initialized=True, last_observed_reset_at=FORECAST_LOW.last_reset_at)
+        store, notifier = FakeStore(state), FakeNotifier()
+        self.make_monitor(store, notifier, FORECAST_OLDER_RESET).run_once()
+        self.assertEqual(notifier.reset_alerts, [])
+        self.assertEqual(store.state.last_observed_reset_at, FORECAST_LOW.last_reset_at)
+
 
     def test_first_high_value_alerts(self) -> None:
         store, notifier = FakeStore(), FakeNotifier()
@@ -95,6 +123,23 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(notifier.recovery_alerts, [3])
         self.assertEqual(store.state.consecutive_failures, 0)
         self.assertFalse(store.state.failure_alert_sent)
+
+    def test_reset_alert_failure_keeps_previous_reset_baseline(self) -> None:
+        state = MonitorState(initialized=True, last_observed_reset_at=FORECAST_LOW.last_reset_at)
+        store = FakeStore(state)
+
+        class FailingNotifier(FakeNotifier):
+            def send_reset_alert(self, forecast: Forecast, checked_at: datetime) -> None:
+                raise RuntimeError("smtp offline")
+
+        result = self.make_monitor(store, FailingNotifier(), FORECAST_AFTER_RESET).run_once()
+        self.assertEqual(result, 1)
+        self.assertEqual(store.state.last_observed_reset_at, FORECAST_LOW.last_reset_at)
+
+        notifier = FakeNotifier()
+        self.make_monitor(store, notifier, FORECAST_AFTER_RESET).run_once()
+        self.assertEqual(notifier.reset_alerts, [FORECAST_AFTER_RESET.last_reset_at])
+        self.assertEqual(store.state.last_observed_reset_at, FORECAST_AFTER_RESET.last_reset_at)
 
 
 if __name__ == "__main__":

@@ -46,19 +46,22 @@ class Forecast:
 
 @dataclass
 class MonitorState:
-    schema_version: int = 1
+    schema_version: int = 2
     initialized: bool = False
     above_threshold: bool = False
+    last_observed_reset_at: str | None = None
     consecutive_failures: int = 0
     failure_alert_sent: bool = False
     last_heartbeat_at: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "MonitorState":
+        last_observed_reset_at = raw.get("last_observed_reset_at")
         return cls(
-            schema_version=int(raw.get("schema_version", 1)),
+            schema_version=max(2, int(raw.get("schema_version", 1))),
             initialized=bool(raw.get("initialized", False)),
             above_threshold=bool(raw.get("above_threshold", False)),
+            last_observed_reset_at=last_observed_reset_at if isinstance(last_observed_reset_at, str) else None,
             consecutive_failures=max(0, int(raw.get("consecutive_failures", 0))),
             failure_alert_sent=bool(raw.get("failure_alert_sent", False)),
             last_heartbeat_at=raw.get("last_heartbeat_at"),
@@ -92,6 +95,15 @@ def heartbeat_due(state: MonitorState, now: datetime) -> bool:
         return now - parse_iso(state.last_heartbeat_at) >= HEARTBEAT_INTERVAL
     except (TypeError, ValueError):
         return True
+
+
+def reset_is_newer(previous_reset_at: str | None, current_reset_at: str) -> bool:
+    if not previous_reset_at:
+        return False
+    try:
+        return parse_iso(current_reset_at) > parse_iso(previous_reset_at)
+    except (TypeError, ValueError):
+        return False
 
 
 def _json_request(
@@ -199,6 +211,19 @@ class GmailNotifier:
                 f"网站数据更新时间：{format_beijing(forecast.updated_at)}",
                 f"最近一次全局重置时间：{format_beijing(forecast.last_reset_at)}",
                 f"查看网站：{SITE_URL}",
+            ]
+        )
+        self._send(subject, body)
+
+    def send_reset_alert(self, forecast: Forecast, checked_at: datetime) -> None:
+        subject = "[Codex Reset \u63d0\u9192] \u68c0\u6d4b\u5230\u5168\u5c40\u989d\u5ea6\u521a\u521a\u91cd\u7f6e"
+        body = "\n".join(
+            [
+                "Codex Reset \u7684\u201c\u8ddd\u4e0a\u6b21\u5168\u5c40\u91cd\u7f6e\u65f6\u95f4\u201d\u5df2\u56de\u9000\uff0c\u8bf4\u660e\u68c0\u6d4b\u5230\u65b0\u7684\u5168\u5c40\u91cd\u7f6e\u3002",
+                "",
+                f"\u672c\u6b21\u5168\u5c40\u91cd\u7f6e\u65f6\u95f4\uff1a{format_beijing(forecast.last_reset_at)}",
+                f"\u68c0\u6d4b\u65f6\u95f4\uff1a{format_beijing(checked_at)}",
+                f"\u67e5\u770b\u7f51\u7ad9\uff1a{SITE_URL}",
             ]
         )
         self._send(subject, body)
@@ -403,6 +428,19 @@ class Monitor:
                 self._save_if_changed(state, original, now)
                 print(f"Recovery email could not be sent: {exc}", file=sys.stderr)
                 return 1
+        if reset_is_newer(state.last_observed_reset_at, forecast.last_reset_at):
+            try:
+                self.notifier.send_reset_alert(forecast, now)
+            except Exception as exc:
+                self._save_if_changed(state, original, now)
+                print(f"Reset alert email could not be sent: {exc}", file=sys.stderr)
+                return 1
+
+        if not state.last_observed_reset_at or reset_is_newer(
+            state.last_observed_reset_at, forecast.last_reset_at
+        ):
+            state.last_observed_reset_at = forecast.last_reset_at
+
 
         is_above = forecast.probability_24h > self.threshold
         should_alert = is_above and (not state.initialized or not state.above_threshold)
